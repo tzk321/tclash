@@ -104,6 +104,11 @@ class MihomoAPI:
     async def set_mode(self, mode: str) -> None:
         await self._call("PATCH", "/configs", json={"mode": mode})
 
+    async def reload_config(self, path: str | None = None) -> None:
+        """让运行中的内核重新读配置。传 path 则读指定文件，否则读它自己的。"""
+        payload = {"path": path or "", "payload": ""}
+        await self._call("PUT", "/configs?force=true", json=payload)
+
     # --------------------------------------------------------------- delays
     async def delay(
         self,

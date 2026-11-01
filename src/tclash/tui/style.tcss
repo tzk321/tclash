@@ -96,3 +96,29 @@ HelpScreen {
     padding: 0;
     height: auto;
 }
+
+ProfileScreen {
+    align: center middle;
+    background: $background 55%;
+}
+
+#profile-box {
+    width: 88;
+    max-width: 96%;
+    height: auto;
+    max-height: 80%;
+    border: round $primary 60%;
+    background: $surface;
+}
+
+#profile-list {
+    height: auto;
+    max-height: 14;
+    padding: 1 1;
+}
+
+#profile-hint {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}

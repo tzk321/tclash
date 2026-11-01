@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import urlsplit
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -13,6 +15,8 @@ from rich.text import Text
 from .api import MihomoAPI, MihomoError
 from .models import Proxy, delay_style, format_delay
 from .settings import VALID_MODES, Settings
+from . import subscription
+from .subscription import Profiles, SubError
 
 app = typer.Typer(
     add_completion=False,
@@ -355,15 +359,188 @@ def mode(
         raise fail(str(exc)) from exc
 
 
-@app.command()
-def sub(ctx: typer.Context) -> None:
-    """订阅管理（阶段 2 实现）。"""
-    console.print("[yellow]订阅管理还没实现[/]，阶段 2 会加入：")
-    console.print(f"  · profile 存储：[cyan]{ctx.obj.path().parent / 'profiles.toml'}[/]")
-    console.print("  · 拉取订阅 → 套本地覆盖项 → sudo 写 /etc/mihomo/config.yaml → 热重载")
-    # TODO(阶段 2)：本地覆盖项放 ~/.config/tclash/overrides.yaml，写盘前合并；
-    # 至少必须保住 dns.fake-ip-range（默认 198.18.0.1/16 会被 SSRF 防护当内网拦）。
-    console.print(f"  · 本地覆盖项：[cyan]{ctx.obj.path().parent / 'overrides.yaml'}[/]（含 dns.fake-ip-range）")
+# ------------------------------------------------------------------ 订阅
+sub_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="订阅：添加、拉取更新、切换、查看流量与到期",
+)
+app.add_typer(sub_app, name="sub")
+
+
+def load_profiles() -> Profiles:
+    try:
+        return Profiles.load()
+    except SubError as exc:
+        raise fail(str(exc)) from exc
+
+
+def mask_url(url: str) -> str:
+    """只露域名，参数一律打码（订阅 token 就是账号）。"""
+    parts = urlsplit(url)
+    tail = "?…" if parts.query else ""
+    return f"{parts.scheme}://{parts.netloc}{parts.path[:18]}{'…' if len(parts.path) > 18 else ''}{tail}"
+
+
+def run_sub(coro_factory) -> None:
+    try:
+        asyncio.run(coro_factory())
+    except SubError as exc:
+        raise fail(str(exc)) from exc
+    except MihomoError as exc:
+        raise fail(str(exc)) from exc
+
+
+@sub_app.command("list")
+def sub_list(ctx: typer.Context) -> None:
+    """列出所有订阅及当前生效的那个。"""
+    profiles = load_profiles()
+    if not profiles.items:
+        console.print("[grey50]还没有订阅，用 tclash sub add <名字> <URL> 添加[/]")
+        return
+    table = Table(title="订阅", title_justify="left")
+    table.add_column("", width=2)
+    table.add_column("名字", style="bold")
+    table.add_column("节点", justify="right")
+    table.add_column("流量")
+    table.add_column("到期")
+    table.add_column("更新时间", style="grey50")
+    for profile in profiles.items.values():
+        mark = "▶" if profile.name == profiles.active else ""
+        style = "bold cyan" if profile.name == profiles.active else ""
+        table.add_row(
+            mark,
+            Text(profile.name, style=style),
+            str(profile.node_count or "—"),
+            profile.traffic_line(),
+            profile.expire_line(),
+            profile.updated_line(),
+        )
+    console.print(table)
+
+
+@sub_app.command("add")
+def sub_add(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="订阅名字，随便起"),
+    url: str = typer.Argument(..., help="订阅链接"),
+    use: bool = typer.Option(False, "--use", help="添加后立即拉取并生效"),
+) -> None:
+    """添加一个订阅。"""
+    profiles = load_profiles()
+    profile = profiles.add(name, url)
+    profiles.save()
+    console.print(f"[green]✓[/] 已保存订阅 [bold]{name}[/]（{mask_url(url)}）")
+    if not use:
+        console.print("[grey50]加 --use 或 tclash sub update 才会真的拉取[/]")
+        return
+
+    async def go() -> None:
+        result = await subscription.update(profiles, profile, ctx.obj)
+        for step in result.steps:
+            console.print(f"  [grey50]·[/] {step}")
+
+    run_sub(go)
+    console.print(f"[green]✓[/] [bold]{name}[/] 已生效")
+
+
+@sub_app.command("update")
+def sub_update(
+    ctx: typer.Context,
+    name: str | None = typer.Argument(None, help="订阅名字，留空 = 当前生效的"),
+    every: bool = typer.Option(False, "--all", help="更新全部订阅"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只拉取和校验，不写 /etc"),
+    no_reload: bool = typer.Option(False, "--no-reload", help="写盘但不热重载"),
+) -> None:
+    """拉取订阅、合并本地覆盖项、写盘并热重载。"""
+    profiles = load_profiles()
+    targets = list(profiles.items.values()) if every else [profiles.get(name) if name else profiles.current()]
+    if not targets:
+        raise fail("没有可更新的订阅")
+
+    async def go() -> None:
+        for profile in targets:
+            console.print(f"拉取 [bold]{profile.name}[/]…")
+            result = await subscription.update(
+                profiles, profile, ctx.obj, reload=not no_reload, dry_run=dry_run
+            )
+            for step in result.steps:
+                console.print(f"  [grey50]·[/] {step}")
+            console.print(f"[green]✓[/] [bold]{profile.name}[/]：{result.summary}")
+            if result.backup:
+                console.print(f"  [grey50]备份：{result.backup}[/]")
+
+    run_sub(go)
+
+
+@sub_app.command("use")
+def sub_use(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="要生效的订阅名字"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只校验，不写 /etc"),
+) -> None:
+    """切换生效的订阅（用本地缓存，必要时会先拉取）。"""
+    profiles = load_profiles()
+    profile = profiles.get(name)
+
+    async def go() -> None:
+        result = await subscription.use(profiles, profile, ctx.obj, dry_run=dry_run)
+        for step in result.steps:
+            console.print(f"  [grey50]·[/] {step}")
+        console.print(f"[green]✓[/] 已切换到 [bold]{name}[/]")
+
+    run_sub(go)
+
+
+@sub_app.command("show")
+def sub_show(
+    ctx: typer.Context,
+    name: str | None = typer.Argument(None, help="订阅名字，留空 = 当前生效的"),
+) -> None:
+    """显示订阅详情（URL 打码）与本地覆盖项。"""
+    profiles = load_profiles()
+    profile = profiles.get(name) if name else profiles.current()
+    info = Table(show_header=False, box=None, pad_edge=False)
+    info.add_row("名字", profile.name)
+    info.add_row("地址", mask_url(profile.url))
+    info.add_row("节点", str(profile.node_count or "—"))
+    info.add_row("流量", profile.traffic_line())
+    info.add_row("到期", profile.expire_line())
+    info.add_row("更新", profile.updated_line())
+    info.add_row("原始缓存", str(profile.raw_path))
+    info.add_row("合并结果", str(profile.merged_path))
+    console.print(info)
+    overrides = subscription.load_overrides()
+    console.print()
+    if overrides:
+        console.print("[bold]本地覆盖项[/]（写盘前合并进订阅配置）")
+        console.print(
+            yaml.safe_dump(overrides, allow_unicode=True, sort_keys=True, default_flow_style=False),
+            end="",
+        )
+    else:
+        console.print(f"[grey50]没有本地覆盖项（{subscription.overrides_path()}）[/]")
+
+
+@sub_app.command("remove")
+def sub_remove(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="要删除的订阅名字"),
+    keep_cache: bool = typer.Option(False, "--keep-cache", help="保留缓存的 yaml 文件"),
+) -> None:
+    """删除订阅（不动 /etc/mihomo 里已生效的配置）。"""
+    profiles = load_profiles()
+    profile = profiles.get(name)
+    if not keep_cache:
+        for path in (profile.raw_path, profile.merged_path):
+            path.unlink(missing_ok=True)
+    del profiles.items[name]
+    if profiles.active == name:
+        profiles.active = next(iter(profiles.items), "")
+    profiles.save()
+    console.print(f"[green]✓[/] 已删除订阅 [bold]{name}[/]")
+    if profiles.active:
+        console.print(f"[grey50]当前生效的订阅是 {profiles.active}[/]")
 
 
 def main() -> None:

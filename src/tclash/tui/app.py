@@ -13,9 +13,12 @@ from ..api import MihomoAPI, MihomoError
 from ..models import Proxy, format_delay, group_badge, group_hint, type_label
 from ..search import matches as search_matches
 from ..settings import Settings
+from .. import subscription
+from ..subscription import Profiles, SubError
 from ..theme import next_theme, resolve_theme
 from .help import HelpScreen
 from .list import Item, SpringList
+from .profiles import ProfileScreen
 
 DELAY_COLUMN = 7
 TYPE_COLUMN = 9
@@ -52,6 +55,8 @@ class TclashApp(App[None]):
         ("G", "last_row", "末个"),
         ("t", "test_visible", "测速可见"),
         ("T", "test_group", "测速整组"),
+        ("u", "update_sub", "更新订阅"),
+        ("p", "profiles", "订阅"),
         ("b", "best", "选最快"),
         ("s", "toggle_sort", "排序"),
         ("z", "toggle_hidden", "内置节点"),
@@ -77,6 +82,7 @@ class TclashApp(App[None]):
         self.show_hidden = False
         self.sort_by_delay = False
         self.testing = False
+        self.sub_busy = False
         self.version = "?"
         self.mode = "?"
         self.status = "启动中…"
@@ -106,6 +112,7 @@ class TclashApp(App[None]):
         await self.reload()
         self.query_one("#proxies", SpringList).focus()
         self._booted = True
+        self.auto_update_if_due()
 
     async def on_unmount(self) -> None:
         await self.api.aclose()
@@ -211,23 +218,30 @@ class TclashApp(App[None]):
         hints = (
             ("j/k", "移动"),
             ("h/l", "换组"),
-            ("Tab", "换面板"),
-            ("Enter", "切换"),
+            ("Tab", "面板"),
+            ("↵", "切换"),
             ("t", "测速"),
             ("T", "整组"),
             ("b", "最快"),
             ("/", "过滤"),
+            ("p", "订阅"),
+            ("u", "更新"),
+            ("^t", "主题"),
             ("s", "排序"),
             ("z", "内置"),
-            ("^t", "主题"),
-            ("?", "帮助"),
-            ("q", "退出"),
         )
+        tail = (("?", "帮助"), ("q", "退出"))
         bar = Text()
         width = self.query_one("#hintbar", Static).content_size.width or self.size.width
+        # 先给“帮助 / 退出”留位，宽度不够时牺牲前面的次要提示，而不是把尾巴截掉
+        budget = width - sum(cell_len(f" {k} {v} ") for k, v in tail)
         for keys, label in hints:
-            if cell_len(bar.plain) + cell_len(f" {keys} {label} ") > width:
-                break  # 放不下就到此为止，别把最后一项截成“^t”
+            piece = f" {keys} {label} "
+            if cell_len(bar.plain) + cell_len(piece) > budget:
+                break
+            bar.append(f" {keys} ", style="bold " + accent)
+            bar.append(f"{label} ", style="dim")
+        for keys, label in tail:
             bar.append(f" {keys} ", style="bold " + accent)
             bar.append(f"{label} ", style="dim")
         self.query_one("#hintbar", Static).update(bar)
@@ -431,6 +445,74 @@ class TclashApp(App[None]):
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    # --------------------------------------------------------------- 订阅
+    def load_profiles(self) -> Profiles:
+        """读订阅表；文件不存在或坏了都当成空表，不阻止界面启动。"""
+        try:
+            return Profiles.load()
+        except SubError as exc:
+            self.set_status(f"订阅表读取失败：{exc}", error=True)
+            return Profiles()
+
+    def action_profiles(self) -> None:
+        profiles = self.load_profiles()
+        if not profiles.items:
+            self.set_status("还没有订阅：tclash sub add <名字> <URL>", error=True)
+            return
+        self.push_screen(
+            ProfileScreen(list(profiles.items.values()), profiles.active),
+            self._on_profile_chosen,
+        )
+
+    def _on_profile_chosen(self, choice: str | None) -> None:
+        if not choice:
+            return
+        if choice.startswith("update:"):
+            self.apply_subscription(choice.removeprefix("update:"))
+            return
+        self.apply_subscription(choice)
+
+    def action_update_sub(self) -> None:
+        profiles = self.load_profiles()
+        try:
+            profile = profiles.current()
+        except SubError as exc:
+            self.set_status(str(exc), error=True)
+            return
+        self.apply_subscription(profile.name)
+
+    @work(exclusive=True, group="subscription")
+    async def apply_subscription(self, name: str) -> None:
+        """拉取 / 切换订阅，然后热重载。写 /etc 需要免密 sudo。"""
+        profiles = self.load_profiles()
+        try:
+            profile = profiles.get(name)
+        except SubError as exc:
+            self.set_status(str(exc), error=True)
+            return
+        self.sub_busy = True
+        self.set_status(f"拉取订阅 {profile.name}…")
+        try:
+            result = await subscription.update(profiles, profile, self.settings, api=self.api)
+        except (SubError, MihomoError) as exc:
+            self.sub_busy = False
+            self.set_status(f"订阅失败：{exc}", error=True)
+            return
+        self.sub_busy = False
+        await self.reload()
+        self.set_status(f"订阅已更新 · {profile.name} · {result.summary}")
+
+    def auto_update_if_due(self) -> None:
+        """启动时自检：订阅声明的更新间隔到了就在后台拉一次。"""
+        profiles = self.load_profiles()
+        if not profiles.active or profiles.active not in profiles.items:
+            return
+        profile = profiles.items[profiles.active]
+        if not profile.due:
+            return
+        self.set_status(f"订阅 {profile.name} 该更新了，后台拉取…")
+        self.apply_subscription(profile.name)
 
     def action_test_visible(self) -> None:
         names = list(self.rows)

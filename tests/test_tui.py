@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 import pytest
 from textual.widgets import Input
 
+from tclash import subscription as sub
 from tclash.api import MihomoAPI
 from tclash.settings import Settings
 from tclash.tui.app import TclashApp
@@ -183,3 +185,131 @@ async def test_help_screen_opens() -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(pilot.app.screen, HelpScreen)
+
+
+# ------------------------------------------------------------------ 订阅
+@pytest.fixture(autouse=True)
+def isolated_dirs(tmp_path, monkeypatch):
+    """所有 TUI 测试都跑在 tmp 配置目录里，绝不读真实订阅表（防止误写 /etc）。"""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    return tmp_path
+
+
+def write_profiles(**entries: dict) -> None:
+    """写一份订阅表。默认 updated_at=现在，免得每次启动都触发自动更新。"""
+    from tclash.subscription import Profile, Profiles
+
+    profiles = Profiles(active=next(iter(entries), ""))
+    for name, extra in entries.items():
+        extra = {"updated_at": int(time.time()), **extra}
+        profiles.items[name] = Profile(name=name, url=f"http://sub/{name}", **extra)
+    profiles.save()
+
+
+def fake_update(seen: list[tuple[str, bool]], *, fail: bool = False):
+    from tclash.subscription import Result
+
+    async def run(profiles, profile, settings, *, reload=True, dry_run=False, api=None):
+        seen.append((profile.name, dry_run))
+        if fail:
+            raise sub.SubError("拉取失败：连接超时")
+        return Result(profile=profile, steps=[f"已写入 {settings.config_path}"])
+
+    return run
+
+
+@pytest.mark.asyncio
+async def test_profiles_key_without_subscriptions(monkeypatch) -> None:
+    monkeypatch.setattr(sub, "update", fake_update([]))
+    async with TclashApp(Settings(), api=make_api([])).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert pilot.app.screen is pilot.app.screen_stack[0]  # 没弹窗
+        assert "还没有订阅" in pilot.app.status
+        assert pilot.app.status_error
+
+
+@pytest.mark.asyncio
+async def test_profile_modal_switches_subscription(monkeypatch) -> None:
+    from tclash.tui.profiles import ProfileScreen
+
+    write_profiles(**{"一分机场": {"node_count": 42, "total": 100, "download": 40}, "备用": {}})
+    seen: list[tuple[str, bool]] = []
+    monkeypatch.setattr(sub, "update", fake_update(seen))
+
+    async with TclashApp(Settings(), api=make_api([])).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        screen = pilot.app.screen
+        assert isinstance(screen, ProfileScreen)
+        rows = screen.query_one("#profile-list", SpringList)
+        assert [item.key for item in rows.items] == ["一分机场", "备用"]
+        assert rows.cursor_key == "一分机场"
+
+        rows.move_to(1)  # 备用
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert isinstance(pilot.app.screen, ProfileScreen) is False
+        assert seen == [("备用", False)]
+        assert "订阅已更新" in pilot.app.status
+        assert not pilot.app.status_error
+
+
+@pytest.mark.asyncio
+async def test_update_key_pulls_active_profile(monkeypatch) -> None:
+    write_profiles(**{"一分机场": {}, "备用": {}})
+    seen: list[tuple[str, bool]] = []
+    monkeypatch.setattr(sub, "update", fake_update(seen))
+
+    async with TclashApp(Settings(), api=make_api([])).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("u")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert seen == [("一分机场", False)]
+
+
+@pytest.mark.asyncio
+async def test_subscription_failure_sets_error_status(monkeypatch) -> None:
+    write_profiles(**{"一分机场": {}})
+    monkeypatch.setattr(sub, "update", fake_update([], fail=True))
+
+    async with TclashApp(Settings(), api=make_api([])).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("u")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "订阅失败" in pilot.app.status
+        assert "连接超时" in pilot.app.status
+        assert pilot.app.status_error
+
+
+@pytest.mark.asyncio
+async def test_auto_update_when_due(monkeypatch) -> None:
+    # updated_at 为空 = 从未更新 → due，启动就该自动拉一次
+    write_profiles(**{"一分机场": {"interval": 24, "updated_at": None}})
+    seen: list[tuple[str, bool]] = []
+    monkeypatch.setattr(sub, "update", fake_update(seen))
+
+    async with TclashApp(Settings(), api=make_api([])).run_test() as pilot:
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert seen == [("一分机场", False)]
+
+
+@pytest.mark.asyncio
+async def test_no_auto_update_when_fresh(monkeypatch) -> None:
+    write_profiles(**{"一分机场": {"interval": 24, "updated_at": int(time.time())}})
+    seen: list[tuple[str, bool]] = []
+    monkeypatch.setattr(sub, "update", fake_update(seen))
+
+    async with TclashApp(Settings(), api=make_api([])).run_test() as pilot:
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert seen == []
