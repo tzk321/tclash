@@ -84,6 +84,7 @@ config_path = "/etc/mihomo/config.yaml"
 
 - [x] 阶段 1：API 客户端、TUI 节点列表、切换、并发测速、CLI 子命令
 - [ ] 阶段 2：订阅 / Profile 管理（拉取订阅 → 套本地覆盖项 → 写 config.yaml → 热重载，带备份回滚）
+  - 覆盖项文件：`~/.config/tclash/overrides.yaml`（占位已建，代码尚未读取）。写盘前合并，至少必须保住 `dns.fake-ip-range`：mihomo 默认 `198.18.0.1/16` 属 RFC 2544 保留段，会被带 SSRF 防护的工具（如 pi 的 `fetch_content`）当内网拦截；本机现用 `28.0.0.1/8`。
 - [ ] 阶段 3：白名单自动测速切换、实时网速面板、规则 / 模式页
 
 ## 开发

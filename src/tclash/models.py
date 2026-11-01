@@ -13,6 +13,31 @@ BUILTIN_NAMES = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBA
 # 机场塞进订阅里的“剩余流量/到期时间”伪节点，默认隐藏
 INFO_KEYWORDS = ("剩余流量", "套餐到期", "到期时间", "流量重置", "过期时间", "官网")
 
+# 策略组类型 -> 界面上的中文名与一句话说明
+GROUP_LABELS = {
+    "selector": "手动选择",
+    "urltest": "自动测速",
+    "fallback": "故障转移",
+    "loadbalance": "负载均衡",
+    "relay": "链式代理",
+}
+
+GROUP_BADGES = {
+    "selector": "手动",
+    "urltest": "自动",
+    "fallback": "转移",
+    "loadbalance": "均衡",
+    "relay": "链式",
+}
+
+GROUP_HINTS = {
+    "selector": "自己挑节点，Enter 切换",
+    "urltest": "mihomo 定期测速，自动用延迟最低的",
+    "fallback": "按顺序用，前面不可用才换下一个",
+    "loadbalance": "把流量分摊到多个节点",
+    "relay": "按链路顺序串联代理",
+}
+
 
 @dataclass(slots=True)
 class Proxy:
@@ -70,7 +95,7 @@ def parse_proxies(payload: dict) -> list[Proxy]:
 
 
 def delay_style(delay: int | None) -> str:
-    """延迟分档配色。"""
+    """延迟分档配色（CLI 用；TUI 会换成本主题的颜色）。"""
     if delay is None:
         return "grey50"
     if delay <= 200:
@@ -80,6 +105,21 @@ def delay_style(delay: int | None) -> str:
     if delay <= 900:
         return "orange3"
     return "red"
+
+
+def type_label(proxy: Proxy) -> str:
+    """策略组显示中文类型，普通节点显示协议名。"""
+    if proxy.is_group:
+        return GROUP_LABELS.get(proxy.type.lower(), proxy.type)
+    return proxy.type
+
+
+def group_badge(proxy: Proxy) -> str:
+    return GROUP_BADGES.get(proxy.type.lower(), "组") if proxy.is_group else ""
+
+
+def group_hint(proxy: Proxy) -> str:
+    return GROUP_HINTS.get(proxy.type.lower(), "") if proxy.is_group else ""
 
 
 def format_delay(delay: int | None) -> str:

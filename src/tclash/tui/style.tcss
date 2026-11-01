@@ -1,18 +1,18 @@
-/* tclash TUI 样式 */
+/* tclash TUI 样式：全部走主题变量，ansi-* 主题时跟随终端配色 */
 
 Screen {
-    background: $surface;
+    background: $background;
 }
 
 #topbar {
-    height: 2;
+    height: 4;
+    border-title-background: $surface;
+    border-subtitle-background: $surface;
     padding: 0 1;
-    background: $panel;
-    color: $text;
-}
-
-#topbar:light {
-    background: $panel-lighten-1;
+    border: round $primary 45%;
+    background: $surface;
+    border-title-align: left;
+    border-subtitle-align: right;
 }
 
 #body {
@@ -20,66 +20,79 @@ Screen {
 }
 
 #sidebar {
-    width: 36;
-    background: $surface-darken-1;
-    border-right: solid $primary 20%;
-}
-
-.panel-title {
-    height: 1;
-    padding: 0 1;
-    background: $boost;
-    color: $text-muted;
-    text-style: bold;
-}
-
-ListView {
-    height: 1fr;
-    padding: 0 1;
-}
-
-ListView > ListItem {
-    padding: 0 1;
-}
-
-ListView > ListItem.-highlight {
-    background: $primary 25%;
+    width: 38;
+    border-title-background: $surface;
+    border-subtitle-background: $surface;
+    border-subtitle-color: $text-muted;
+    border: round $primary 30%;
+    background: $surface;
+    border-title-align: left;
+    border-subtitle-align: right;
 }
 
 #main {
     width: 1fr;
+    border-title-background: $surface;
+    border-subtitle-background: $surface;
+    border-subtitle-color: $text-muted;
+    border: round $primary 30%;
+    background: $surface;
+    border-title-align: left;
+    border-subtitle-align: right;
+}
+
+SpringList {
+    height: 1fr;
+    background: transparent;
+}
+
+#sidebar SpringList {
+    padding: 0 0;
 }
 
 #proxies {
-    height: 1fr;
-    border: none;
-}
-
-#proxies > .datatable--header {
-    background: $boost;
-    text-style: bold;
-}
-
-#proxies > .datatable--cursor {
-    background: $primary 35%;
-    text-style: bold;
-}
-
-#proxies > .datatable--hover {
-    background: $primary 12%;
+    padding: 0 1;
 }
 
 #filter {
+    height: 3;
+    padding: 0 1;
+    border: round $primary 25%;
+    background: $surface;
+}
+
+#filter:focus {
+    border: round $accent;
+}
+
+#hintbar {
     height: 1;
-    border: none;
     padding: 0 1;
     background: $panel;
 }
 
-#filter:focus {
-    background: $boost;
+HelpScreen {
+    align: center middle;
+    background: $background 55%;
 }
 
-Footer {
-    background: $panel;
+#help {
+    width: 80;
+    max-width: 96%;
+    height: auto;
+    max-height: 86%;
+    padding: 1 2;
+    border: round $primary 60%;
+    background: $surface;
+}
+
+#help .help-heading {
+    padding: 1 0 0 0;
+    color: $text-accent;
+    text-style: bold;
+}
+
+#help .help-block {
+    padding: 0;
+    height: auto;
 }

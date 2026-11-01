@@ -361,6 +361,9 @@ def sub(ctx: typer.Context) -> None:
     console.print("[yellow]订阅管理还没实现[/]，阶段 2 会加入：")
     console.print(f"  · profile 存储：[cyan]{ctx.obj.path().parent / 'profiles.toml'}[/]")
     console.print("  · 拉取订阅 → 套本地覆盖项 → sudo 写 /etc/mihomo/config.yaml → 热重载")
+    # TODO(阶段 2)：本地覆盖项放 ~/.config/tclash/overrides.yaml，写盘前合并；
+    # 至少必须保住 dns.fake-ip-range（默认 198.18.0.1/16 会被 SSRF 防护当内网拦）。
+    console.print(f"  · 本地覆盖项：[cyan]{ctx.obj.path().parent / 'overrides.yaml'}[/]（含 dns.fake-ip-range）")
 
 
 def main() -> None:

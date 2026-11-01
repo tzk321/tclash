@@ -42,6 +42,7 @@ class Settings:
     concurrency: int = 8
     test_url: str = DEFAULT_TEST_URL
     config_path: str = f"{DEFAULT_MIHOMO_DIR}/config.yaml"
+    theme: str = "auto"  # auto / ansi-dark / ansi-light / textual-dark / …
     # 阶段 3：自动测速切换
     whitelist: list[str] = field(default_factory=list)
     auto_switch: bool = False
