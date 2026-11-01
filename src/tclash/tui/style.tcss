@@ -1,0 +1,85 @@
+/* tclash TUI 样式 */
+
+Screen {
+    background: $surface;
+}
+
+#topbar {
+    height: 2;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#topbar:light {
+    background: $panel-lighten-1;
+}
+
+#body {
+    height: 1fr;
+}
+
+#sidebar {
+    width: 36;
+    background: $surface-darken-1;
+    border-right: solid $primary 20%;
+}
+
+.panel-title {
+    height: 1;
+    padding: 0 1;
+    background: $boost;
+    color: $text-muted;
+    text-style: bold;
+}
+
+ListView {
+    height: 1fr;
+    padding: 0 1;
+}
+
+ListView > ListItem {
+    padding: 0 1;
+}
+
+ListView > ListItem.-highlight {
+    background: $primary 25%;
+}
+
+#main {
+    width: 1fr;
+}
+
+#proxies {
+    height: 1fr;
+    border: none;
+}
+
+#proxies > .datatable--header {
+    background: $boost;
+    text-style: bold;
+}
+
+#proxies > .datatable--cursor {
+    background: $primary 35%;
+    text-style: bold;
+}
+
+#proxies > .datatable--hover {
+    background: $primary 12%;
+}
+
+#filter {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: $panel;
+}
+
+#filter:focus {
+    background: $boost;
+}
+
+Footer {
+    background: $panel;
+}
