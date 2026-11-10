@@ -14,14 +14,18 @@ from ..models import Proxy, format_delay, group_badge, group_hint, type_label
 from ..search import matches as search_matches
 from ..settings import Settings
 from .. import subscription
+from .. import tun as tun_mode
 from ..subscription import Profiles, SubError
 from ..theme import next_theme, resolve_theme
+from ..traffic import TrafficMeter, format_speed, sparkline
 from .help import HelpScreen
 from .list import Item, SpringList
+from .panels import ConnectionsScreen, RulesScreen
 from .profiles import ProfileScreen
 
 DELAY_COLUMN = 7
 TYPE_COLUMN = 9
+SPARK_WIDTH = 18
 
 
 def build_api(settings: Settings) -> MihomoAPI:
@@ -58,6 +62,10 @@ class TclashApp(App[None]):
         ("u", "update_sub", "更新订阅"),
         ("p", "profiles", "订阅"),
         ("b", "best", "选最快"),
+        ("n", "connections", "连接"),
+        ("w", "rules", "规则"),
+        ("m", "cycle_mode", "模式"),
+        ("i", "toggle_tun", "TUN"),
         ("s", "toggle_sort", "排序"),
         ("z", "toggle_hidden", "内置节点"),
         ("/", "focus_filter", "过滤"),
@@ -85,6 +93,8 @@ class TclashApp(App[None]):
         self.sub_busy = False
         self.version = "?"
         self.mode = "?"
+        self.tun_enable = False
+        self.meter = TrafficMeter()
         self.status = "启动中…"
         self.status_error = False
         # 延迟分档颜色，随主题刷新：好 / 一般 / 偏慢 / 超时
@@ -112,6 +122,7 @@ class TclashApp(App[None]):
         await self.reload()
         self.query_one("#proxies", SpringList).focus()
         self._booted = True
+        self.set_interval(1.0, self.poll_traffic)
         self.auto_update_if_due()
 
     async def on_unmount(self) -> None:
@@ -198,20 +209,56 @@ class TclashApp(App[None]):
         if self.testing:
             line.append(" · 测速中…", style=warn)
         line.append("\n")
-        line.append(self.api.base, style="dim")
-        line.append("    模式 ", style="dim")
-        line.append(self.mode, style="bold")
-        focused = self.focused_proxy()
-        if focused is not None and self.focused is self.query_one("#proxies"):
-            delay = self.delay_of(focused)
-            line.append("    焦点 ", style="dim")
-            line.append(focused.name, style="bold " + accent)
-            line.append(f" {type_label(focused)}", style="dim")
-            line.append(f" {format_delay(delay)}", style=self.delay_style(delay))
+
+        # 第二行有“流量 / 迷你曲线 / 焦点”三块内容，宽度不够时按 焦点 > 曲线 的优先级取舍
+        width = bar.content_size.width or self.size.width
+        focus = self.topbar_focus()
+        second = self.topbar_second_line(spark=True)
+        if focus is not None:
+            if second.cell_len + focus.cell_len <= width:
+                second.append_text(focus)
+            else:
+                second = self.topbar_second_line(spark=False)
+                if second.cell_len + focus.cell_len <= width:
+                    second.append_text(focus)
+        line.append_text(second)
 
         bar.update(line)
         bar.border_subtitle = f"mihomo {self.version.lstrip('v')}"
         self.render_main_title()
+
+    def topbar_focus(self) -> Text | None:
+        """顶栏右半边的“焦点节点”，不在节点列表上聚焦时为 None。"""
+        focused = self.focused_proxy()
+        if focused is None or self.focused is not self.query_one("#proxies"):
+            return None
+        accent = self.delay_colors[1]
+        delay = self.delay_of(focused)
+        tail = Text("    焦点 ", style="dim")
+        tail.append(focused.name, style="bold " + accent)
+        tail.append(f" {type_label(focused)}", style="dim")
+        tail.append(f" {format_delay(delay)}", style=self.delay_style(delay))
+        return tail
+
+    def topbar_second_line(self, *, spark: bool) -> Text:
+        accent = self.delay_colors[1]
+        meter = self.meter
+        line = Text(self.api.base, style="dim")
+        line.append("    模式 ", style="dim")
+        line.append(self.mode, style="bold")
+        line.append("    TUN ", style="dim")
+        line.append("开" if self.tun_enable else "关", style="bold " + accent if self.tun_enable else "dim")
+        line.append("    ↓ ", style="dim")
+        line.append(format_speed(meter.down_speed), style="bold")
+        line.append(" ↑ ", style="dim")
+        line.append(format_speed(meter.up_speed), style="bold")
+        if spark:
+            curve = sparkline(meter.history, SPARK_WIDTH)
+            if curve.strip():
+                line.append("  " + curve, style=accent)
+        if meter.connections:
+            line.append(f"  {meter.connections} 连接", style="dim")
+        return line
 
     def render_hintbar(self) -> None:
         accent = self.delay_colors[1]
@@ -227,6 +274,7 @@ class TclashApp(App[None]):
             ("p", "订阅"),
             ("u", "更新"),
             ("^t", "主题"),
+            ("i", "TUN"),
             ("s", "排序"),
             ("z", "内置"),
         )
@@ -278,6 +326,7 @@ class TclashApp(App[None]):
         self.proxies = probes
         self.by_name = {p.name: p for p in probes}
         self.mode = str(configs.get("mode", "?"))
+        self.tun_enable = tun_mode.runtime_enabled(configs)
         groups = [p for p in probes if p.is_group and p.name.upper() != "GLOBAL"]
         self.groups = sorted(groups, key=lambda g: 0 if g.type.lower() == "selector" else 1)
 
@@ -533,6 +582,62 @@ class TclashApp(App[None]):
 
     def action_best(self) -> None:
         self.auto_best()
+
+    # ------------------------------------------------------ 流量 / 模式 / 规则
+    async def poll_traffic(self) -> None:
+        """每秒一次：把累计字节差分成实时速度，只重绘顶栏，不碰列表。"""
+        if not self._booted or self.sub_busy:
+            return
+        try:
+            payload = await self.api.connections()
+        except MihomoError:
+            self.meter.reset()  # 内核重启过的话累计值归零，基线必须清
+            return
+        self.meter.sample(payload)
+        self.render_topbar()
+
+    def action_connections(self) -> None:
+        self.push_screen(ConnectionsScreen())
+
+    @work(exclusive=True, group="rules")
+    async def action_rules(self) -> None:
+        try:
+            rules = await self.api.rules()
+        except MihomoError as exc:
+            self.set_status(str(exc), error=True)
+            return
+        if not rules:
+            self.set_status("内核没返回规则", error=True)
+            return
+        self.push_screen(RulesScreen(rules))
+
+    async def action_cycle_mode(self) -> None:
+        order = ("rule", "global", "direct")
+        current = self.mode if self.mode in order else "rule"
+        target = order[(order.index(current) + 1) % len(order)]
+        try:
+            await self.api.set_mode(target)
+        except MihomoError as exc:
+            self.set_status(f"切换模式失败：{exc}", error=True)
+            return
+        self.mode = target
+        labels = {"rule": "规则", "global": "全局", "direct": "直连"}
+        self.set_status(f"模式切到 {target}（{labels[target]}）")
+
+    @work(exclusive=True, group="tun")
+    async def action_toggle_tun(self) -> None:
+        target = not self.tun_enable
+        label = "开启" if target else "关闭"
+        self.set_status(f"TUN {label}中…")
+        try:
+            result = await tun_mode.set_tun(self.api, self.settings, target)
+        except (MihomoError, SubError) as exc:
+            self.set_status(f"TUN {label}失败：{exc}", error=True)
+            return
+        self.tun_enable = result.runtime
+        tail = "，开机也这样" if result.boot else "，只到本次重启"
+        self.set_status(f"TUN 已{label}{tail}")
+        self.render_topbar()
 
     def is_hidden(self, proxy: Proxy | None, name: str) -> bool:
         if proxy is None:

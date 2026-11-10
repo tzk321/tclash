@@ -16,6 +16,7 @@ from .api import MihomoAPI, MihomoError
 from .models import Proxy, delay_style, format_delay
 from .settings import VALID_MODES, Settings
 from . import subscription
+from . import tun as tun_mode
 from .subscription import Profiles, SubError
 
 app = typer.Typer(
@@ -131,7 +132,12 @@ def status(ctx: typer.Context) -> None:
         info.add_row("模式", str(configs.get("mode", "?")))
         info.add_row("混合端口", str(configs.get("mixed-port", "?")))
         tun = configs.get("tun") or {}
-        info.add_row("TUN", "开启" if tun.get("enable") else "关闭")
+        boot = tun_mode.file_enabled(ctx.obj.config_path)
+        info.add_row(
+            "TUN",
+            ("开启" if tun.get("enable") else "关闭")
+            + ("（开机开启）" if boot else "（开机关闭）" if boot is False else ""),
+        )
         console.print(info)
         console.print()
 
@@ -357,6 +363,63 @@ def mode(
         console.print(asyncio.run(go()))
     except MihomoError as exc:
         raise fail(str(exc)) from exc
+
+
+TUN_ALIASES = {"on": True, "off": False, "true": True, "false": False, "1": True, "0": False}
+
+
+@app.command()
+def tun(
+    ctx: typer.Context,
+    value: str | None = typer.Argument(None, help="on / off，留空只看状态"),
+    now_only: bool = typer.Option(False, "--now", help="只改运行时，不写配置文件"),
+) -> None:
+    """查看或切换 TUN（默认同时写入配置，开机自动生效）。"""
+    settings: Settings = ctx.obj
+
+    if value is None:
+        async def fetch() -> dict:
+            async with build_api(settings) as api:
+                return await api.configs()
+
+        note: str | None = None
+        try:
+            runtime = "开启" if tun_mode.runtime_enabled(asyncio.run(fetch())) else "关闭"
+        except MihomoError as exc:
+            runtime, note = "未知", str(exc)
+
+        boot = tun_mode.file_enabled(settings.config_path)
+        override = tun_mode.override_enabled()
+        info = Table(show_header=False, box=None, pad_edge=False)
+        info.add_row("运行时", runtime)
+        info.add_row("开机", {True: "开启", False: "关闭"}.get(boot, "未知"))
+        info.add_row("配置文件", settings.config_path)
+        info.add_row(
+            "覆盖项",
+            "未设置" if override is None else f"tun.enable = {str(override).lower()}",
+        )
+        console.print(info)
+        if note:
+            raise fail(note)
+        return
+
+    enable = TUN_ALIASES.get(value.strip().lower())
+    if enable is None:
+        raise fail("只能是 on / off")
+
+    async def apply() -> tun_mode.TunResult:
+        async with build_api(settings) as api:
+            return await tun_mode.set_tun(api, settings, enable, persist=not now_only)
+
+    try:
+        result = asyncio.run(apply())
+    except (MihomoError, SubError) as exc:
+        raise fail(str(exc)) from exc
+
+    for step in result.steps:
+        console.print(f"  [grey50]·[/] {step}")
+    tail = "（开机自动）" if result.boot else "（仅本次，重启后回到配置文件）"
+    console.print(f"[green]✓[/] TUN {'开启' if result.runtime else '关闭'}{tail}")
 
 
 # ------------------------------------------------------------------ 订阅

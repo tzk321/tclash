@@ -122,3 +122,48 @@ ProfileScreen {
     padding: 0 1;
     color: $text-muted;
 }
+
+/* ---------------------------------------------------------------- 连接面板 */
+#conn-box {
+    width: 100;
+    max-width: 96%;
+    height: 70%;
+    border: round $primary 60%;
+    background: $surface;
+}
+
+#conn-head {
+    height: 1;
+    padding: 0 1;
+}
+
+#conn-list {
+    height: 1fr;
+    padding: 1 1;
+}
+
+#conn-hint {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+/* ------------------------------------------------------------------ 规则表 */
+#rules-box {
+    width: 96;
+    max-width: 96%;
+    height: 80%;
+    border: round $primary 60%;
+    background: $surface;
+}
+
+#rules-list {
+    height: 1fr;
+    padding: 1 1;
+}
+
+#rules-hint {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}

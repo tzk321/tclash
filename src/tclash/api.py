@@ -97,12 +97,21 @@ class MihomoAPI:
         rows = (data or {}).get("rules", []) if isinstance(data, dict) else []
         return [r for r in rows if isinstance(r, dict)]
 
+    async def connections(self) -> dict:
+        """活动连接 + 累计流量。拿不到就返回空 dict，UI 自己降级。"""
+        data = await self._call("GET", "/connections")
+        return data if isinstance(data, dict) else {}
+
     # ---------------------------------------------------------- write paths
     async def select(self, group: str, name: str) -> None:
         await self._call("PUT", f"/proxies/{quote(group, safe='')}", json={"name": name})
 
     async def set_mode(self, mode: str) -> None:
         await self._call("PATCH", "/configs", json={"mode": mode})
+
+    async def set_tun(self, enable: bool) -> None:
+        """运行时开关 TUN。mihomo 只合并 tun 里传的字段，端口等不受影响。"""
+        await self._call("PATCH", "/configs", json={"tun": {"enable": enable}})
 
     async def reload_config(self, path: str | None = None) -> None:
         """让运行中的内核重新读配置。传 path 则读指定文件，否则读它自己的。"""

@@ -41,6 +41,7 @@ tclash
 | `b` | 测速后自动切到最快的节点 |
 | `s` | 按延迟排序 / 恢复配置顺序 |
 | `h` | 显示 / 隐藏 `DIRECT`、`剩余流量`、`套餐到期` 这类节点 |
+| `i` | 开 / 关 TUN（默认同时写入配置，开机也生效） |
 | `/` | 过滤节点，`Esc` 回到列表 |
 | `r` | 重新读取 mihomo 状态 |
 | `q` | 退出 |
@@ -61,9 +62,24 @@ tclash test --all --json         # 全量测速，输出 JSON
 tclash best --apply              # 测速并把最快的节点切进去
 tclash mode                      # 查看当前模式
 tclash mode global               # rule / global / direct
+tclash tun                       # TUN 状态：运行时 / 开机默认 / 覆盖项
+tclash tun on                    # 打开 TUN，并写配置让开机也自动开
+tclash tun off --now             # 只关这一次，不动配置文件
 ```
 
 全局选项 `--controller URL`、`--secret XXX` 可临时覆盖配置。
+
+## TUN
+
+`tclash tun on` 会同时做三件事：
+
+1. `PATCH /configs {"tun":{"enable":true}}` —— 内核里立刻生效，端口和策略组不受影响；
+2. 改 `/etc/mihomo/config.yaml` 的 `tun.enable`（先 `mihomo -t` 校验，再备份替换，最后热重载）；
+3. 写 `~/.config/tclash/overrides.yaml` 的 `tun.enable`。
+
+第 3 步是为了 `tclash sub update`：它用订阅内容 + 覆盖项重新生成 config.yaml，
+不写覆盖项的话订阅一更新就把 TUN 关回去。改配置只动 `tun.enable` 这一行，
+其余内容逐字保留。`--now` 跳过第 2、3 步，只影响当前进程。
 
 ## 配置
 
@@ -84,7 +100,7 @@ config_path = "/etc/mihomo/config.yaml"
 
 - [x] 阶段 1：API 客户端、TUI 节点列表、切换、并发测速、CLI 子命令
 - [ ] 阶段 2：订阅 / Profile 管理（拉取订阅 → 套本地覆盖项 → 写 config.yaml → 热重载，带备份回滚）
-  - 覆盖项文件：`~/.config/tclash/overrides.yaml`（占位已建，代码尚未读取）。写盘前合并，至少必须保住 `dns.fake-ip-range`：mihomo 默认 `198.18.0.1/16` 属 RFC 2544 保留段，会被带 SSRF 防护的工具（如 pi 的 `fetch_content`）当内网拦截；本机现用 `28.0.0.1/8`。
+  - 覆盖项文件：`~/.config/tclash/overrides.yaml`，拉取订阅后合并进配置，只覆盖显式列出的键。至少必须保住 `dns.fake-ip-range`：mihomo 默认 `198.18.0.1/16` 属 RFC 2544 保留段，会被带 SSRF 防护的工具（如 pi 的 `fetch_content`）当内网拦截；本机现用 `28.0.0.1/8`。
 - [ ] 阶段 3：白名单自动测速切换、实时网速面板、规则 / 模式页
 
 ## 开发

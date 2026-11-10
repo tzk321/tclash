@@ -313,3 +313,163 @@ async def test_no_auto_update_when_fresh(monkeypatch) -> None:
         await pilot.app.workers.wait_for_complete()
         await pilot.pause()
         assert seen == []
+
+
+# --------------------------------------------------- 流量 / 连接 / 规则 / 模式
+CONNECTIONS = {
+    "downloadTotal": 10_000,
+    "uploadTotal": 2_000,
+    "connections": [
+        {
+            "id": "a",
+            "metadata": {"host": "example.com", "destinationPort": "443"},
+            "rule": "DomainSuffix",
+            "rulePayload": "example.com",
+            "chains": ["主组", "香港01"],
+            "upload": 100,
+            "download": 4000,
+            "start": "2026-11-02T00:00:00Z",
+        },
+        {
+            "id": "b",
+            "metadata": {"destinationIP": "1.1.1.1", "destinationPort": "53"},
+            "rule": "MATCH",
+            "rulePayload": "",
+            "chains": ["DIRECT"],
+            "upload": 10,
+            "download": 20,
+            "start": "2026-11-02T00:00:01Z",
+        },
+    ],
+}
+RULES = {
+    "rules": [
+        {"type": "DomainSuffix", "payload": "example.com", "proxy": "主组"},
+        {"type": "MATCH", "payload": "", "proxy": "主组"},
+    ]
+}
+
+
+def make_rich_api(calls: list[httpx.Request]) -> MihomoAPI:
+    """比 make_api 多认识 /connections、/rules 和 PATCH /configs。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        path = request.url.path
+        if path == "/version":
+            return httpx.Response(200, json={"version": "v1.19.33"})
+        if path == "/configs":
+            return httpx.Response(200, json={"mode": "rule"})
+        if path == "/proxies":
+            return httpx.Response(200, json=PROXIES)
+        if path == "/connections":
+            return httpx.Response(200, json=CONNECTIONS)
+        if path == "/rules":
+            return httpx.Response(200, json=RULES)
+        if request.method in ("PUT", "PATCH"):
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(base_url="http://test", transport=httpx.MockTransport(handler))
+    return MihomoAPI("http://test", client=client)
+
+
+async def test_traffic_poll_updates_topbar(monkeypatch: pytest.MonkeyPatch) -> None:
+    from textual.widgets import Static
+
+    calls: list[httpx.Request] = []
+    app = TclashApp(Settings(), api=make_rich_api(calls))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.poll_traffic()
+        await pilot.pause()
+        assert app.meter.connections == 2
+        topbar = app.query_one("#topbar", Static)
+        text = topbar.content.plain
+        assert "↓" in text and "↑" in text
+        assert "2 连接" in text
+
+
+async def test_connections_panel_lists_rows() -> None:
+    from tclash.tui.panels import ConnectionsScreen
+
+    app = TclashApp(Settings(), api=make_rich_api([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConnectionsScreen)
+        await screen.workers.wait_for_complete()
+        await pilot.pause()
+        rows = [item.key for item in screen.query_one("#conn-list", SpringList).items]
+        assert rows == ["a", "b"]  # 按流量降序
+        head = screen.query_one("#conn-head").content.plain
+        assert "↓" in head and "累计" in head
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, ConnectionsScreen)
+
+
+async def test_rules_panel_lists_rules() -> None:
+    from tclash.tui.panels import RulesScreen
+
+    app = TclashApp(Settings(), api=make_rich_api([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RulesScreen)
+        rows = [item.key for item in screen.query_one("#rules-list", SpringList).items]
+        assert rows == ["0:example.com", "1:"]
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, RulesScreen)
+
+
+async def test_mode_key_cycles_and_calls_kernel() -> None:
+    calls: list[httpx.Request] = []
+    app = TclashApp(Settings(), api=make_rich_api(calls))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.pause()
+        patches = [r for r in calls if r.method == "PATCH" and r.url.path == "/configs"]
+        assert patches and json.loads(patches[-1].content)["mode"] == "global"
+        assert app.mode == "global"
+        assert "global" in app.status
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert app.mode == "direct"
+        await pilot.press("m")
+        await pilot.pause()
+        assert app.mode == "rule"  # 转一圈回来
+
+
+@pytest.mark.asyncio
+async def test_tun_key_toggles_and_reports_boot(monkeypatch) -> None:
+    from tclash import tun as tun_mod
+    from tclash.tun import TunResult
+
+    calls: list[tuple[bool, bool]] = []
+
+    async def fake_set_tun(api, settings, enable, *, persist=True):  # noqa: ARG001
+        calls.append((enable, persist))
+        return TunResult(enabled=enable, runtime=enable, boot=True, steps=[])
+
+    monkeypatch.setattr(tun_mod, "set_tun", fake_set_tun)
+    async with TclashApp(Settings(), api=make_api([])).run_test() as pilot:
+        await pilot.pause()
+        assert pilot.app.tun_enable is False  # /configs 里没有 tun 字段
+        await pilot.press("i")
+        await pilot.pause()
+        assert calls == [(True, True)]  # 默认连开机一起改
+        assert pilot.app.tun_enable is True
+        assert "开机" in pilot.app.status
+        await pilot.press("i")
+        await pilot.pause()
+        assert calls[-1] == (False, True)
+        assert pilot.app.tun_enable is False
